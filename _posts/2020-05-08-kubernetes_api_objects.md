@@ -35,3 +35,5 @@ Kubernetes 中所有的配置都是通过 API 对象的 spec 去设置的，也�
 <font size="5"><u>Pod</u></font>
 
 Pod 是在 Kubernetes 集群中运行部署应用或服务的最小单元，它包含一个或多个容器。Pod 的设计理念是支持多个容器在一个 Pod 中共享网络地址和文件系统，可以通过进程间通信和文件共享这种简单高效的方式组合完成服务。Pod 对多容器的支持是 Kubernetes 最基础的设计理念。
+
+Pod 是 Kubernetes 集群中所有业务类型的基础，可以看作运行在 Kubernetes 集群中的小机器人，不同类型的业务就需要不同类型的小机器人去执行。目前K8s中的业务主要可以分为长期伺服型（long-running）、批处理型（batch）、节点后台支撑型（node-daemon）和有状态应用型（stateful application）；分别对应的小机器人控制器为Deployment、Job、DaemonSet和PetSet，本文后面会一一介绍。
