@@ -1,17 +1,14 @@
 ---
 layout: post
 title: "Kubernetes 架构与设计"
-description: ""
-category: 
-tags: []
+description: "Kubernetes 入门系列"
+category: Kubernetes
+tags: [kubernetes入门]
 ---
 {% include JB/setup %}
 
-### 1、Kubernetes 设计概述
 
-
-
-### 2、Kubernetes 架构概述
+### 1、Kubernetes 架构概述
 
 Kubernetes 集群里分为主节点（master）与工作节点（Node）,工作节点是容器应用运行的地方。主节点负责管理整个集群，持续配置并维护集群保持期望的状态。
 
@@ -47,7 +44,7 @@ Kubernetes 主要由以下几个核心组件组成：
 * 服务帐户和令牌控制器（Service Account & Token Controllers）: 为新的命名空间创建默认帐户和 API 访问令牌。
 
 
-一般地，kube-apiserver，kube-controller-manager 和 kube-schedular 都一起部署在主节点（master）, etcd 推荐独立部署，但也可以部署在主节点里。
+一般地，kube-apiserver，kube-controller-manager 和 kube-schedular 都一起部署在主节点（master），因为在目前版本中，控制面板组件通过非安全（没有加密或认证）端口和集群的 kube-apiserver 通信。这个端口通常只在主节点的 localhost 接口暴露。etcd 可以选择独立部署，但也可以部署在主节点里。
 
 ---
 
@@ -86,11 +83,82 @@ cloud-controller-manager 仅运行云提供商特定的控制器循环。您必�
 
 云控制器管理器基于插件机制设计，允许新的云服务供应商通过插件轻松地与 Kubernetes 集成。目前已经有在 Kubernetes 上加入新的云服务供应商计划，并为云服务供应商提供从原先的旧模式迁移到新 CCM 模式的方案。
 
-于是，kubernetes 的架构演变成如下：
+于是，Kubernetes 的架构演变成如下：
 ![avatar](/images/k8s-new-arch.png)
 
 
 <br>
+<br>
+
+
+### 2、Kubernetes 集群组件间的通信
+
+Kubernetes 集群组件间的通信可以分为两类：**工作节点到主节点**和**主节点到工作节点**。
+
+无论是哪种方式，kube-apiserver 都是作为流量的交汇点，是集群组件间通信的核心。集群内各个组件都通过它作为交互的中间媒介，并将信息存入 etcd。当需要获取和操作这些数据时，则通过它提供的 REST 接口来实现。
+![avatar](/images/k8s-networks.png)
 
 
 
+**工作节点到主节点**
+
+---
+
+所有从工作节点到主节点的通信路径都终止于 apiserver（其它主节点组件没有被设计为可暴露远程服务）。在一个典型的部署中，apiserver 被配置为在一个安全的 HTTPS 端口（443）上监听远程连接并启用一种或多种形式的客户端身份认证机制。一种或多种客户端身份认证机制应该被启用，特别是在允许使用 匿名请求 或 service account tokens 的时候。
+
+应该使用集群的公共根证书开通节点，如此它们就能够基于有效的客户端凭据安全的连接 apiserver。例如：在一个默认的 GCE 部署中，客户端凭据以客户端证书的形式提供给 kubelet。
+
+想要连接到 apiserver 的 Pods 可以使用一个 service account 安全的进行连接。这种情况下，当 Pods 被实例化时 Kubernetes 将自动的把公共根证书和一个有效的不记名令牌注入到 pod 里。kubernetes service （所有 namespaces 中）都配置了一个虚拟 IP 地址，用于转发（通过 kube-proxy）请求到 apiserver 的 HTTPS endpoint。
+
+这样的结果使得从集群（在工作节点上运行的组件和 pods）到主节点的缺省连接操作模式默认被保护，能够在不可信或公网中运行。
+
+---
+
+**主节点到工作节点**
+
+---
+
+从主节点（apiserver）到集群有两种主要的通信路径。第一种是从 apiserver 到集群中每个节点上运行的 kubelet 进程。第二种是从 apiserver 通过它的代理功能到任何 node、pod 或者 service。
+
+<br>
+
+*apiserver -> kubelet*
+
+从 apiserver 到 kubelet 的连接用于获取 pods 日志、连接（通过 kubectl）运行中的 pods，以及使用 kubelet 的端口转发功能。这些连接终止于 kubelet 的 HTTPS endpoint。
+
+默认的，apiserver 不会验证 kubelet 的服务证书，这会导致连接遭到中间人攻击，因而在不可信或公共网络上是不安全的。
+
+为了对这个连接进行认证，请使用 --kubelet-certificate-authority 标记给 apiserver 提供一个根证书捆绑，用于 kubelet 的服务证书。
+
+如果这样不可能，又要求避免在不可信的或公共的网络上进行连接，请在 apiserver 和 kubelet 之间使用 SSH 隧道（但新版中已标记为 Deprecated）。
+
+最后，应该启用 Kubelet 用户认证和/或权限认证来保护 kubelet API。
+
+
+*apiserver -> nodes, pods, and services*
+
+从 apiserver 到 node、pod 或者 service 的连接默认为纯 HTTP 方式，因此既没有认证，也没有加密。他们能够通过给 API URL 中的 node、pod 或 service 名称添加前缀 https: 来运行在安全的 HTTPS 连接上。但他们即不会认证 HTTPS endpoint 提供的证书，也不会提供客户端证书。这样虽然连接是加密的，但它不会提供任何完整性保证。这些连接目前还不能安全的在不可信的或公共的网络上运行。
+
+
+
+### 3、Kubernetes 集群组件交互
+
+<br>
+
+#### kubelet 进程与 apiserver 的交互:
+
+每个工作节点上的 kubelet 每隔一个时间周期就会调用一次 apiserver 的 REST 接口报告自身状态，apiserver 接收到这些信息后，将节点状态信息更新到 etcd 中。
+
+kubelet 也通过 apiserver 的 Watch 接口监听 Pod 信息，如果监听到新的 Pod 的副本被调度绑定到本节点，则执行 Pod 对应的容器的创建和启动逻辑；如果监听到 Pod 对象被删除，则删除本节点上相应的 Pod 容器；如果监听到修改 Pod 信息，则 kubelet 监听变化后，会相应修改本节点的 Pod 容器。
+
+<br>
+
+#### kube-controller-manager 与 apiserver 的交互:
+
+kube-controller-manager 中的 Node Controller 模块通过 API Server 提供的 Watch 接口，实时监控 Node 的信息，并做相应处理。
+
+<br>
+
+#### kube-scheduler 与 apiserver 的交互：
+
+当 Scheduler 通过 apiserver 的 Watch 接口监听到新建 Pod 副本的信息后，它会检索所有符合该 Pod 要求的 Node 列表，开始执行 Pod 调度逻辑，调度成功后将 Pod 绑定到目标节点上。
